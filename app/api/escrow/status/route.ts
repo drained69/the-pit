@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { escrowReady, hostKeypair } from "@/lib/escrow-server";
+import { escrowPlayerReady, escrowReady, hostKeypair } from "@/lib/escrow-server";
 import { ESCROW_ACTIVE, ESCROW_PROGRAM_ID, USDC_MINT } from "@/lib/escrow";
 
 export const dynamic = "force-dynamic";
@@ -16,9 +16,10 @@ export async function GET() {
   const programSet = !!ESCROW_PROGRAM_ID;
   const mintSet = !!USDC_MINT;
   const hostSet = !!hostKeypair();
-  const active = escrowReady();
+  const active = escrowReady() && process.env.MAINNET_RECOVERY_MODE !== "YES";
   return NextResponse.json({
     active,
+    withdrawalsAvailable: escrowPlayerReady(),
     checks: {
       programId: programSet,
       usdcMint: mintSet,
@@ -30,6 +31,7 @@ export async function GET() {
       : !programSet ? "NEXT_PUBLIC_ESCROW_PROGRAM_ID not set"
       : !mintSet ? "NEXT_PUBLIC_USDC_MINT not set"
       : !hostSet ? "ESCROW_HOST_SECRET_KEY not set"
+      : process.env.MAINNET_RECOVERY_MODE === "YES" ? "new paid activity paused for recovery"
       : "escrow init failed"
   });
 }

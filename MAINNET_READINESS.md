@@ -2,18 +2,19 @@
 
 ## Current decision: NO GO
 
-Railway still serves the devnet build. The Panta API key is live and verified,
-but the Solana side is not ready for real funds. A read-only mainnet check on
-10 October found that the currently configured devnet escrow program ID has
-no executable account on mainnet and the operator wallet holds 0 mainnet SOL.
-The local `.env.local` now stages the mainnet cluster, canonical Circle USDC,
-and the public mainnet RPC for read-only checks, with the escrow program ID
-cleared so paid pits cannot open there. Railway retains its devnet chain
-settings until a reviewed mainnet program and production RPC are available.
+Railway was last verified on devnet. The Panta API key is live, but the Solana
+side is not ready for real funds. A previous read-only check found no deployed
+mainnet escrow program and 0 mainnet SOL in the operator wallet. The current
+local `.env.local` stages mainnet and canonical Circle USDC, but has no
+production RPC, database, Privy credentials, or mainnet program ID. The local
+preflight currently fails those checks; RPC and Railway requests also fail
+from this environment because DNS/network access is unavailable.
 
-The earlier review found a fund-lock race in escrow settlement and live API
-paths that reported mock success after Panta failures. The fixes have not
-been exercised in a full devnet deposit → trade → settle → claim/recover test.
+An internal review found that settlement could still be closed after the
+recovery deadline, defeating a player's recovery right, and the proposed
+deployment shared the online operator key with the upgrade authority. Source
+changes below close those paths, but the changes have not yet passed a full
+devnet deposit → trade → settle → claim/recover test or an external audit.
 Do not route real USDC through this build yet.
 
 This is a code review and local test pass, not an independent smart contract
@@ -25,6 +26,9 @@ audit or a guarantee that all vulnerabilities have been found.
   depositor entry to be settled or recovered, checked atomically with the
   on-chain deposit counter. Settlement must allocate every remaining USDC
   base unit. A recovered entry can no longer be settled a second time.
+- Ordinary settlement now closes before the recovery deadline. `CloseRefund`
+  atomically assigns each depositor exactly their original entry plus vault
+  deposit; it cannot redirect value to another player.
 - The server supplies all depositor accounts to the close instruction.
 - `Deposit` now requires the round operator's signature. The server only
   co-signs an enrolling wallet after its X/profile and balance checks, so
@@ -34,8 +38,20 @@ audit or a guarantee that all vulnerabilities have been found.
   as confirmed, and a Panta order starts only after its pit trade succeeds.
 - Paid hosting requires persistent storage; mainnet hosting also requires a
   live Panta key, canonical mainnet USDC mint, escrow, Privy, and session
-  secret. The read-only `npm run preflight:mainnet` checks configuration and
-  on-chain program/mint identities in the intended release environment.
+  secret. Runtime gates compare the RPC genesis to the cluster label and apply
+  the same mainnet checks to paid market quotes and builds.
+- Mainnet deployment now separates the online operator/payer from the offline
+  upgrade authority. Release preflight checks the configured authority and
+  frozen bytecode hash/size against the on-chain ProgramData account.
+- Mainnet deposits use the shared paid-release gate and require the RPC's
+  genesis hash to match the selected cluster. Claim and recovery use only the
+  player's signature, so removing the online operator key pauses new deposits
+  without hiding existing positions or blocking withdrawals through the app.
+- Mainnet Railway starts run the read-only release preflight before Next.js
+  accepts traffic. It checks both RPC genesis hashes and the deployed program
+  identity, authority, and bytecode; devnet starts are unchanged. During an
+  incident, `MAINNET_RECOVERY_MODE=YES` lets the app serve existing claims and
+  recoveries when preflight fails, while blocking new paid activity.
 - A trade is rejected if its round changes while its price is being fetched.
 
 ## Blocking work before a real-funds launch
@@ -47,17 +63,16 @@ audit or a guarantee that all vulnerabilities have been found.
    A server endpoint check alone cannot block direct program calls.
 2. **Independent escrow review and tests:** commission an external Solana
    program audit. Add program integration tests covering deposits during
-   settlement, recovered entries, duplicate entries, conservation, host
-   compromise, fee accounts, and timeout recovery. The current Rust suite
-   has one local unit test for the close-account proof; no program-test suite.
-3. **Production infrastructure:** provision a dedicated mainnet RPC with
-   indexing support for `getProgramAccounts`, durable Postgres with backup
-   and restore drill, a production Privy app, and isolated operator/deployer/
-   upgrade keys. The live Panta key is installed in Railway; an independent
-   session secret is staged for its next deployment. Set the canonical mainnet
-   USDC mint and deploy the reviewed escrow program. Confirm the RPC genesis
-   hash and the deployed program's executable account with
-   `npm run preflight:mainnet`.
+   settlement, deadline recovery, refund close, duplicate entries,
+   conservation, host compromise, fee accounts, and timeout recovery. The
+   Rust suite contains helper tests only; no program-test suite exists.
+3. **Production infrastructure:** provision a dedicated server-only mainnet
+   RPC with indexing support for `getProgramAccounts`, a separate
+   browser-safe production RPC, durable Postgres with backup and restore
+   drill, a production Privy app, and isolated operator/payer and offline
+   upgrade keys. Set the canonical mainnet USDC mint, deploy only the
+   reviewed escrow program, and run `npm run preflight:mainnet` against the
+   production environment.
 4. **Realistic canary:** run the exact build through a complete devnet cycle,
    then a limited mainnet canary with capped deposits and monitored operator
    balance, transaction landing, settlement, and user claims. Verify a
@@ -71,12 +86,14 @@ audit or a guarantee that all vulnerabilities have been found.
 
 - `npm run lint` — passed.
 - `npm run build` — passed.
-- `cargo test --locked --offline` — passed, one close-account regression test.
+- `cargo test --locked --offline` — passed, four escrow helper regression tests.
 - `cargo-build-sbf` — passed with the local Solana v1.54 toolchain; the `.so`
   was generated at `program/target/deploy/oracle_rumble_escrow.so`.
-- `npm run preflight:mainnet` — failed as intended against the current devnet
-  environment (cluster, RPC, USDC mint, database, live Panta key, Privy,
-  session secret). No keys or secret values were printed.
+- `npm run preflight:mainnet` — failed as expected because independent audit
+  approval, production RPCs, persistent database, Privy credentials, separate
+  upgrade authority, frozen bytecode identity, and mainnet program ID are not
+  configured. Network checks did not run without the server RPC. No key values
+  were printed.
 
 ## Release order after blockers are resolved
 
@@ -87,7 +104,8 @@ audit or a guarantee that all vulnerabilities have been found.
    intended mainnet RPC. Confirm program ID, executable state, upgrade
    authority, and bytecode/source verification before any app traffic.
 3. Configure production variables in an isolated Railway environment. Run
-   `npm run preflight:mainnet` **there**, not only on a developer laptop.
+   `npm run preflight:mainnet` **there**, not only on a developer laptop. The
+   Railway start command repeats this check before accepting mainnet traffic.
 4. Release the matching app commit. Railway currently deploys the `main`
    branch on push, so inspect all existing uncommitted changes before merge.
 5. Run a small canary from two fresh wallets. Confirm deposit, trading,

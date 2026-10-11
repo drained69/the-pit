@@ -86,6 +86,8 @@ pub enum EscrowError {
     IncompleteSettlement,
     #[error("settlement leaves funds unallocated")]
     UnallocatedFunds,
+    #[error("settlement window is closed")]
+    SettlementWindowClosed,
 }
 
 impl From<EscrowError> for ProgramError {
@@ -606,6 +608,7 @@ fn process_settle_player(
     if round.status != STATUS_OPEN {
         return Err(EscrowError::NotOpen.into());
     }
+    validate_settlement_window(Clock::get()?.unix_timestamp, round.settle_deadline)?;
     if player_entry.owner != program_id {
         return Err(EscrowError::AccountMismatch.into());
     }
@@ -656,10 +659,26 @@ fn process_close_settlement(program_id: &Pubkey, accounts: &[AccountInfo], refun
     if round.status != STATUS_OPEN {
         return Err(EscrowError::NotOpen.into());
     }
-    // The deposit count and the complete entry proof are checked in this same
-    // transaction. A deposit landing after the server's last RPC read makes
-    // this close fail instead of permanently stranding its funds.
-    validate_close_entries(program_id, round_vault.key, round.deposited, &accounts[2..])?;
+    // Normal settlement must finish before recovery opens. A refund close is
+    // safe at any time because this instruction assigns each depositor exactly
+    // their original entry + vault amount in the same atomic transaction.
+    if refund {
+        round.settled_total = apply_refund_entries(
+            program_id,
+            round_vault.key,
+            round.entry_amount,
+            round.deposited,
+            round.total_escrowed,
+            round.claimed_total,
+            &accounts[2..],
+        )?;
+    } else {
+        validate_settlement_window(Clock::get()?.unix_timestamp, round.settle_deadline)?;
+        // The deposit count and complete entry proof are checked in this same
+        // transaction. A deposit landing after the server's last RPC read makes
+        // this close fail instead of permanently stranding its funds.
+        validate_close_entries(program_id, round_vault.key, round.deposited, &accounts[2..])?;
+    }
     if round.settled_total.checked_add(round.claimed_total) != Some(round.total_escrowed) {
         return Err(EscrowError::UnallocatedFunds.into());
     }
@@ -672,6 +691,67 @@ fn process_close_settlement(program_id: &Pubkey, accounts: &[AccountInfo], refun
         }
     }
     Ok(())
+}
+
+fn validate_settlement_window(now: i64, settle_deadline: i64) -> ProgramResult {
+    if now >= settle_deadline {
+        return Err(EscrowError::SettlementWindowClosed.into());
+    }
+    Ok(())
+}
+
+fn apply_refund_entries(
+    program_id: &Pubkey,
+    round_vault_key: &Pubkey,
+    entry_amount: u64,
+    deposited: u16,
+    total_escrowed: u64,
+    claimed_total: u64,
+    entries: &[AccountInfo],
+) -> Result<u64, ProgramError> {
+    if entries.len() != usize::from(deposited) {
+        return Err(EscrowError::IncompleteSettlement.into());
+    }
+    let mut refunded_total = 0u64;
+    let mut recovered_total = 0u64;
+    for (index, ai) in entries.iter().enumerate() {
+        if ai.owner != program_id || entries[..index].iter().any(|prior| prior.key == ai.key) {
+            return Err(EscrowError::IncompleteSettlement.into());
+        }
+        let mut entry = PlayerEntry::try_from_slice(&ai.data.borrow())
+            .map_err(|_| EscrowError::IncompleteSettlement)?;
+        let (expected, _) = Pubkey::find_program_address(
+            &[PLAYER_SEED, round_vault_key.as_ref(), entry.wallet.as_ref()], program_id,
+        );
+        if !entry.is_initialized || entry.round != *round_vault_key || expected != *ai.key {
+            return Err(EscrowError::IncompleteSettlement.into());
+        }
+        let entitlement = entry_amount
+            .checked_add(entry.vault_deposit)
+            .ok_or(EscrowError::Overflow)?;
+        if entry.claimed {
+            if entry.settled || entry.entitlement != 0 {
+                return Err(EscrowError::IncompleteSettlement.into());
+            }
+            recovered_total = recovered_total
+                .checked_add(entitlement)
+                .ok_or(EscrowError::Overflow)?;
+            continue;
+        }
+        refunded_total = refunded_total
+            .checked_add(entitlement)
+            .ok_or(EscrowError::Overflow)?;
+        entry.entitlement = entitlement;
+        entry.settled = true;
+        entry.serialize(&mut &mut ai.data.borrow_mut()[..])
+            .map_err(|_| ProgramError::AccountDataTooSmall)?;
+    }
+    if recovered_total != claimed_total
+        || refunded_total.checked_add(claimed_total) != Some(total_escrowed)
+    {
+        return Err(EscrowError::UnallocatedFunds.into());
+    }
+    Ok(refunded_total)
 }
 
 fn validate_close_entries(
@@ -881,5 +961,93 @@ mod tests {
         entry.claimed = true;
         entry.serialize(&mut &mut ai.data.borrow_mut()[..]).unwrap();
         assert!(validate_close_entries(&program_id, &round, 1, &[ai]).is_ok());
+    }
+
+    #[test]
+    fn settlement_window_ends_at_the_recovery_deadline() {
+        assert!(validate_settlement_window(99, 100).is_ok());
+        assert!(validate_settlement_window(100, 100).is_err());
+        assert!(validate_settlement_window(101, 100).is_err());
+    }
+
+    #[test]
+    fn refund_close_assigns_each_depositor_their_full_original_seat() {
+        let program_id = Pubkey::new_unique();
+        let round = Pubkey::new_unique();
+        let wallet = Pubkey::new_unique();
+        let (entry_key, bump) = Pubkey::find_program_address(
+            &[PLAYER_SEED, round.as_ref(), wallet.as_ref()], &program_id,
+        );
+        let entry = PlayerEntry {
+            is_initialized: true,
+            round,
+            wallet,
+            vault_deposit: 15,
+            entitlement: 0,
+            settled: false,
+            claimed: false,
+            bump,
+        };
+        let mut data = vec![0u8; PLAYER_ENTRY_LEN];
+        let mut lamports = 1;
+        entry.serialize(&mut &mut data[..]).unwrap();
+        let ai = AccountInfo::new(&entry_key, false, true, &mut lamports, &mut data, &program_id, false, 0);
+
+        let refunded = apply_refund_entries(&program_id, &round, 10, 1, 25, 0, &[ai.clone()]).unwrap();
+        let stored = PlayerEntry::try_from_slice(&ai.data.borrow()).unwrap();
+        assert_eq!(refunded, 25);
+        assert_eq!(stored.entitlement, 25);
+        assert!(stored.settled);
+    }
+
+    #[test]
+    fn refund_close_accounts_for_a_player_who_already_recovered() {
+        let program_id = Pubkey::new_unique();
+        let round = Pubkey::new_unique();
+        let recovered_wallet = Pubkey::new_unique();
+        let remaining_wallet = Pubkey::new_unique();
+        let (recovered_key, recovered_bump) = Pubkey::find_program_address(
+            &[PLAYER_SEED, round.as_ref(), recovered_wallet.as_ref()], &program_id,
+        );
+        let (remaining_key, remaining_bump) = Pubkey::find_program_address(
+            &[PLAYER_SEED, round.as_ref(), remaining_wallet.as_ref()], &program_id,
+        );
+        let mut recovered_data = vec![0u8; PLAYER_ENTRY_LEN];
+        let mut remaining_data = vec![0u8; PLAYER_ENTRY_LEN];
+        let mut recovered_lamports = 1;
+        let mut remaining_lamports = 1;
+        PlayerEntry {
+            is_initialized: true,
+            round,
+            wallet: recovered_wallet,
+            vault_deposit: 15,
+            entitlement: 0,
+            settled: false,
+            claimed: true,
+            bump: recovered_bump,
+        }.serialize(&mut &mut recovered_data[..]).unwrap();
+        PlayerEntry {
+            is_initialized: true,
+            round,
+            wallet: remaining_wallet,
+            vault_deposit: 15,
+            entitlement: 0,
+            settled: false,
+            claimed: false,
+            bump: remaining_bump,
+        }.serialize(&mut &mut remaining_data[..]).unwrap();
+        let recovered = AccountInfo::new(&recovered_key, false, true, &mut recovered_lamports, &mut recovered_data, &program_id, false, 0);
+        let remaining = AccountInfo::new(&remaining_key, false, true, &mut remaining_lamports, &mut remaining_data, &program_id, false, 0);
+
+        let refunded = apply_refund_entries(
+            &program_id, &round, 10, 2, 50, 25, &[recovered.clone(), remaining.clone()],
+        ).unwrap();
+        let remaining_entry = PlayerEntry::try_from_slice(&remaining.data.borrow()).unwrap();
+        assert_eq!(refunded, 25);
+        assert_eq!(remaining_entry.entitlement, 25);
+        assert!(remaining_entry.settled);
+        assert!(apply_refund_entries(
+            &program_id, &round, 10, 2, 50, 24, &[recovered, remaining],
+        ).is_err());
     }
 }

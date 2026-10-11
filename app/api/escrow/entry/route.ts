@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { escrowReady, readPlayerEntry, readVault } from "@/lib/escrow-server";
+import { escrowPlayerReady, readPlayerEntry, readVault } from "@/lib/escrow-server";
 import { getLatestRound } from "@/lib/round-store";
 import { normalizeArenaCode, seatCostUsdc } from "@/lib/royale";
 
@@ -18,7 +18,7 @@ export async function GET(request: Request) {
   const wallet = url.searchParams.get("wallet") ?? "";
   const arena = normalizeArenaCode(url.searchParams.get("arena"));
   if (!wallet) return NextResponse.json({ error: "wallet required" }, { status: 400 });
-  if (!escrowReady()) return NextResponse.json({ escrow: "inactive", deposited: false });
+  if (!escrowPlayerReady()) return NextResponse.json({ escrow: "inactive", deposited: false });
 
   const round = await getLatestRound(arena);
   if (!round?.escrow) return NextResponse.json({ escrow: "none", deposited: false });

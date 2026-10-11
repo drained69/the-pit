@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireWallet } from "@/lib/session";
 import { getActiveRound, getLatestRound, mutateActiveRound } from "@/lib/round-store";
 import { isPracticeArena, normalizeArenaCode, normalizeCallPct, redactOpeningCalls, seatPlayer, type Side } from "@/lib/royale";
-import { confirmSignature, escrowReady, verifyPlayerDeposited } from "@/lib/escrow-server";
+import { confirmSignature, escrowPlayerReady, escrowReady, verifyPlayerDeposited } from "@/lib/escrow-server";
 import { NEEDS_X_MESSAGE, playerName } from "@/lib/identity";
 
 export const dynamic = "force-dynamic";
@@ -93,7 +93,7 @@ export async function POST(request: Request) {
   const nickname = who.name;
 
   // Never fall back to ledger-only for an arena that expects on-chain USDC.
-  if (peek.escrow && !escrowReady()) {
+  if (peek.escrow && !escrowPlayerReady()) {
     return NextResponse.json({ error: "escrow service unavailable — try again later", escrowDown: true }, { status: 503 });
   }
 
@@ -111,6 +111,12 @@ export async function POST(request: Request) {
       }
       if (peek.entrants.filter((e) => !e.isBot).length >= peek.config.capacity) {
         return NextResponse.json({ error: "pit is full" }, { status: 409 });
+      }
+      if (process.env.MAINNET_RECOVERY_MODE === "YES") {
+        return NextResponse.json({ error: "new deposits are paused during mainnet recovery", escrowDown: true }, { status: 503 });
+      }
+      if (!escrowReady()) {
+        return NextResponse.json({ error: "new deposits are paused while the escrow operator is unavailable", escrowDown: true }, { status: 503 });
       }
       return NextResponse.json({ error: "deposit required", needsDeposit: true, escrow: { roundVault: peek.escrow!.roundVault, mint: peek.escrow!.mint } }, { status: 402 });
     }

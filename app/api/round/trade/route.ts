@@ -47,6 +47,9 @@ export async function POST(request: Request) {
 
   const peek = await getActiveRound(arena);
   if (!peek) return NextResponse.json({ error: "no active round in this pit", arena }, { status: 404 });
+  if (peek.escrow && process.env.MAINNET_RECOVERY_MODE === "YES") {
+    return NextResponse.json({ error: "paid pit trading is paused during mainnet recovery" }, { status: 503 });
+  }
   if (peek.status !== "live") return NextResponse.json({ error: "round is not live" }, { status: 409 });
   if (isPicksFormat(peek.config.format)) return NextResponse.json({ error: "This pit is played by picking answers — there's nothing to trade." }, { status: 409 });
   if (!tradingOpen(peek)) {

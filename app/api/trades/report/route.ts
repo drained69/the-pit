@@ -50,8 +50,8 @@ export async function GET(request: Request) {
   const signature = new URL(request.url).searchParams.get("signature");
   if (!signature) return NextResponse.json({ error: "signature required" }, { status: 400 });
   const resp = await readStatus(signature);
-  if (resp.status === "processed" || resp.status === "confirmed") {
-    recordAttribution(`sig=${signature.slice(0, 8)}… kind=${resp.kind ?? "buy"}`);
+  if (resp.source === "panta" && resp.kind === "buy" && (resp.status === "processed" || resp.status === "confirmed")) {
+    recordAttribution(signature, `sig=${signature.slice(0, 8)}… kind=${resp.kind ?? "buy"}`);
   }
   return NextResponse.json(resp);
 }
@@ -62,8 +62,8 @@ export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as { signature?: string };
   if (!body?.signature) return NextResponse.json({ error: "signature required" }, { status: 400 });
   const resp = await readStatus(body.signature);
-  if (resp.status === "processed" || resp.status === "confirmed") {
-    recordAttribution(`sig=${body.signature.slice(0, 8)}… kind=${resp.kind ?? "buy"}`);
+  if (resp.source === "panta" && resp.kind === "buy" && (resp.status === "processed" || resp.status === "confirmed")) {
+    recordAttribution(body.signature, `sig=${body.signature.slice(0, 8)}… kind=${resp.kind ?? "buy"}`);
   }
   return NextResponse.json(resp);
 }

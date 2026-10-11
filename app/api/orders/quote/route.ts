@@ -44,6 +44,9 @@ function decimalToCents(v: number | string | undefined): number {
 }
 
 export async function POST(request: Request) {
+  if (process.env.MAINNET_RECOVERY_MODE === "YES") {
+    return NextResponse.json({ error: "new Panta orders are paused during mainnet recovery" }, { status: 503 });
+  }
   if (process.env.NEXT_PUBLIC_SOLANA_CLUSTER === "mainnet-beta" && !/^pk_live_/.test(process.env.PANTA_API_KEY ?? "")) {
     return NextResponse.json({ error: "Live Panta orders are unavailable on this deployment." }, { status: 503 });
   }

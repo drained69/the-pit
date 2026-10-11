@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "node scripts/start.mjs",
     "lint": "tsc --noEmit",
     "preflight:mainnet": "node scripts/mainnet-preflight.mjs",
     "seed:devnet": "node scripts/seed-markets.mjs",

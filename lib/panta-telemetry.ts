@@ -37,7 +37,8 @@ export type TelemetryEvent = {
 type State = {
   events: TelemetryEvent[];
   seq: number;
-  attributionCount: number;      // /trades/report → attributed
+  attributionCount: number;      // unique confirmed signatures seen by this process
+  attributedSignatures: Set<string>; // capped; the count stays a lower bound after the cap
   lastFallbackAt: number | null; // most recent event where PANTA_LIVE=true but call errored
   totals: {
     live: number;                // successful live calls
@@ -54,10 +55,12 @@ const state: State = g.__pantaTelemetry ?? {
   events: [],
   seq: 0,
   attributionCount: 0,
+  attributedSignatures: new Set(),
   lastFallbackAt: null,
   totals: { live: 0, fallback: 0, mock: 0 }
 };
 g.__pantaTelemetry = state;
+state.attributedSignatures ??= new Set();
 
 function push(ev: Omit<TelemetryEvent, "id">) {
   state.seq += 1;
@@ -86,8 +89,14 @@ export function recordPantaCall(ev: {
   push({ ts: Date.now(), ...ev });
 }
 
-/** Marks a `/trades/report` result as attributed to the partner key. */
-export function recordAttribution(note?: string) {
+/** Marks a unique confirmed trade signature as attributed in this process. */
+export function recordAttribution(signature: string, note?: string) {
+  const key = signature.trim();
+  if (!key || state.attributedSignatures.has(key)) return;
+  // Keep memory bounded. Once saturated, retain the current lower-bound count
+  // instead of evicting signatures and counting old replays a second time.
+  if (state.attributedSignatures.size >= 100_000) return;
+  state.attributedSignatures.add(key);
   state.attributionCount += 1;
   push({
     ts: Date.now(),

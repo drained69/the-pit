@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { PublicKey } from "@solana/web3.js";
-import { escrowReady, listWalletDeposits, type WalletDeposit } from "@/lib/escrow-server";
+import { escrowPlayerReady, listWalletDeposits, type WalletDeposit } from "@/lib/escrow-server";
 import { latestRoundsForWallet } from "@/lib/round-store";
 import { livePricing, yesAfterTick } from "@/lib/round-keeper";
 import { cutLine, finishingOrder, markToMarket, paidPlaces, scorePlace, standings, type Entrant, type Round } from "@/lib/royale";
@@ -25,7 +25,7 @@ const DUST_USDC = 0.0001;
 async function deposits(wallet: string): Promise<WalletDeposit[]> {
   const hit = depositCache.get(wallet);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.deposits;
-  const list = escrowReady() ? await listWalletDeposits(wallet) : [];
+  const list = escrowPlayerReady() ? await listWalletDeposits(wallet) : [];
   if (depositCache.size > 2_000) depositCache.clear();
   depositCache.set(wallet, { at: Date.now(), deposits: list });
   return list;
@@ -38,10 +38,13 @@ function actionFor(round: Round | null, dep: WalletDeposit | undefined): { actio
   if (dep.vault?.settled) {
     return dep.settled && dep.entitlementUsdc > DUST_USDC ? { action: "claim", usdc: dep.entitlementUsdc } : { action: "none", usdc: 0 };
   }
+  // The on-chain recovery deadline is authoritative even if the database
+  // still says that a pit is live after a stalled keeper or restore.
+  const recoverAt = dep.vault ? dep.vault.settleDeadline * 1000 : Infinity;
+  if (Date.now() >= recoverAt) return { action: "recover", usdc: seat };
   const finished = !round || round.status === "complete" || round.status === "cancelled";
   if (!finished) return { action: "none", usdc: 0 };
-  const recoverAt = dep.vault ? dep.vault.settleDeadline * 1000 : Infinity;
-  return Date.now() >= recoverAt ? { action: "recover", usdc: seat } : { action: "settling", usdc: 0 };
+  return { action: "settling", usdc: 0 };
 }
 
 function myView(round: Round, me: Entrant, yes: number | null, showCall: boolean): PortfolioItem["me"] {

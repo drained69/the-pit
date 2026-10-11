@@ -9,7 +9,7 @@
  * is seated, and always re-checks right before the round locks.
  */
 
-import { escrowReady, listDepositors, readVault } from "@/lib/escrow-server";
+import { escrowPlayerReady, listDepositors, readVault } from "@/lib/escrow-server";
 import { humanCount, type Round } from "@/lib/royale";
 import { getProfiles } from "@/lib/profile-store";
 import { PRIVY_ENABLED } from "@/lib/privy-server";
@@ -33,7 +33,7 @@ export type SeatSync = {
 
 export async function unseatedDepositors(round: Round | null): Promise<SeatSync> {
   const none: SeatSync = { wallets: [], failed: false };
-  if (!round || round.status !== "enrolling" || !round.escrow || !escrowReady()) return none;
+  if (!round || round.status !== "enrolling" || !round.escrow || !escrowPlayerReady()) return none;
 
   const now = Date.now();
   const humans = humanCount(round);

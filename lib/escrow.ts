@@ -228,7 +228,7 @@ export function ixCloseSettlement(params: { host: PublicKey; roundVault: PublicK
     keys: [
       { pubkey: params.host, isSigner: true, isWritable: false },
       { pubkey: params.roundVault, isSigner: false, isWritable: true },
-      ...params.playerEntries.map((pubkey) => ({ pubkey, isSigner: false, isWritable: false }))
+      ...params.playerEntries.map((pubkey) => ({ pubkey, isSigner: false, isWritable: !!params.refund }))
     ],
     data: Buffer.from([params.refund ? 7 : 3])
   });

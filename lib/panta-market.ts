@@ -31,6 +31,8 @@ export type PantaSnapshot = {
   category: string;
   /** Panta's YES price, cents. */
   yesCents: number;
+  /** Display price preserves resolved 0¢/100¢ outcomes; keeper price stays 1–99¢. */
+  displayYesCents: number;
   /** Catalog lists omit spot prices; only market detail can confirm a line. */
   priceAvailable: boolean;
   phase: "active" | "resolved" | "graduated" | "pending";
@@ -38,6 +40,8 @@ export type PantaSnapshot = {
   unavailable: boolean;
   /** Resolved outcome when Panta has ruled, else null. */
   outcome: "YES" | "NO" | null;
+  /** Actual resolution time, distinct from the scheduled resolution time. */
+  resolvedAt: string | null;
   endMs: number | null;
   startMs: number | null;
   resolutionMs: number | null;
@@ -81,11 +85,13 @@ export function snapshotFrom(m: RawMarket): PantaSnapshot {
     question: (m.title ?? m.question ?? "").trim(),
     category: (m.category ?? "other").toLowerCase(),
     yesCents: Math.max(1, Math.min(99, yes)),
+    displayYesCents: Math.max(0, Math.min(100, yes)),
     priceAvailable,
     phase: mapPhase(m.phase ?? m.status, resolved),
     resolved,
     unavailable,
     outcome,
+    resolvedAt: m.resolvedAt ?? null,
     endMs: toMs(m.endTime),
     startMs: toMs(m.startTime),
     resolutionMs: toMs(m.resolutionTime ?? m.resolveAt ?? m.resolutionTimestamp),
@@ -133,7 +139,7 @@ export async function getPantaMarket(id: string, requireFresh = false): Promise<
 }
 
 /** Open (unresolved, not yet closed) Panta markets a pit can run on. */
-export async function listPantaMarkets(): Promise<PantaSnapshot[]> {
+export async function listPantaCatalog(): Promise<PantaSnapshot[]> {
   if (!PANTA_LIVE) return [];
   if (cache.catalog && Date.now() - cache.catalog.at < CATALOG_TTL_MS) return cache.catalog.list;
   try {
@@ -152,12 +158,9 @@ export async function listPantaMarkets(): Promise<PantaSnapshot[]> {
       if (!cursor || items.length === 0 || seenCursors.has(cursor)) break;
       seenCursors.add(cursor);
     }
-    const now = Date.now();
     const list = raw
       .map(snapshotFrom)
-      .filter((m) => m.id && m.question && !m.resolved && !m.unavailable
-        && m.phase !== "pending" && (m.startMs === null || m.startMs <= now)
-        && (m.endMs === null || m.endMs > now))
+      .filter((m) => m.id && m.question)
       .sort((a, b) => b.volumeUsdc - a.volumeUsdc);
     cache.catalogFetchFailed = false;
     cache.catalog = { at: Date.now(), list };
@@ -166,6 +169,14 @@ export async function listPantaMarkets(): Promise<PantaSnapshot[]> {
     cache.catalogFetchFailed = true;
     return cache.catalog?.list ?? [];
   }
+}
+
+/** Open markets suitable for starting a new paid pit. */
+export async function listPantaMarkets(): Promise<PantaSnapshot[]> {
+  const now = Date.now();
+  return (await listPantaCatalog()).filter((m) => !m.resolved && !m.unavailable
+    && m.phase !== "pending" && (m.startMs === null || m.startMs <= now)
+    && (m.endMs === null || m.endMs > now));
 }
 
 // ── drafts (markets created through The Pit) ──────────────────────────

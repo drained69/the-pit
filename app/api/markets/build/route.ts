@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { limitByIp } from "@/lib/rate-limit";
 import { PANTA_LIVE, PantaError, pantaFetch } from "@/lib/panta";
 import { getDraft, PANTA_SANDBOX } from "@/lib/panta-market";
+import { mainnetPaidReadinessError } from "@/lib/mainnet-readiness";
 import { sessionWallet } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +18,10 @@ export async function POST(request: Request) {
   const limited = limitByIp(request, "panta-write", 30, 60_000);
   if (limited) return limited;
   if (!PANTA_LIVE) return NextResponse.json({ error: "Market creation needs a Panta API key on this server." }, { status: 503 });
+  if (!PANTA_SANDBOX) {
+    const readinessError = await mainnetPaidReadinessError();
+    if (readinessError) return NextResponse.json({ error: readinessError }, { status: 503 });
+  }
   const wallet = sessionWallet(request);
   if (!wallet) return NextResponse.json({ error: "Sign in with X first.", needsAuth: true }, { status: 401 });
   const body = (await request.json().catch(() => ({}))) as { draftId?: string };

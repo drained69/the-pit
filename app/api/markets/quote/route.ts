@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { limitByIp, overLimit } from "@/lib/rate-limit";
 import { PANTA_LIVE, pantaFetch } from "@/lib/panta";
 import { PANTA_CATEGORIES, PANTA_SANDBOX, saveDraft, type PantaCategory } from "@/lib/panta-market";
-import { STORE_ENABLED } from "@/lib/round-store";
+import { mainnetPaidReadinessError } from "@/lib/mainnet-readiness";
 import { sessionWallet } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -36,10 +36,9 @@ export async function POST(request: Request) {
   const limited = limitByIp(request, "panta-write", 30, 60_000);
   if (limited) return limited;
   if (!PANTA_LIVE) return NextResponse.json({ error: "Market creation needs a Panta API key on this server." }, { status: 503 });
-  if (!PANTA_SANDBOX && !STORE_ENABLED) return NextResponse.json({ error: "Paid Panta market creation requires persistent database storage on this server." }, { status: 503 });
-  if (!PANTA_SANDBOX && (!process.env.NEXT_PUBLIC_SOLANA_RPC || !(process.env.NEXT_PUBLIC_USDC_MINT || process.env.USDC_MINT)
-    || process.env.NEXT_PUBLIC_SOLANA_CLUSTER !== "mainnet-beta" || /devnet|testnet/i.test(process.env.NEXT_PUBLIC_SOLANA_RPC))) {
-    return NextResponse.json({ error: "Paid Panta market creation needs a configured mainnet Solana RPC and USDC mint on this server." }, { status: 503 });
+  if (!PANTA_SANDBOX) {
+    const readinessError = await mainnetPaidReadinessError();
+    if (readinessError) return NextResponse.json({ error: readinessError }, { status: 503 });
   }
 
   const wallet = sessionWallet(request);

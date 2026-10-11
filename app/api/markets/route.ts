@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { PANTA_LIVE, pantaFetch, type PantaMarket } from "@/lib/panta";
+import { PANTA_LIVE, type PantaMarket } from "@/lib/panta";
 import { arenas as mockArenas } from "@/lib/arena-data";
-import { pantaMarketToUi, type PantaLiveMarket } from "@/lib/panta-shape";
-import { toMs } from "@/lib/panta-market";
+import { formatCloses, formatVolume } from "@/lib/panta-shape";
+import { listPantaCatalog, pantaCatalogFetchFailed, toMs } from "@/lib/panta-market";
 
 /**
  * GET /api/markets
@@ -34,15 +34,14 @@ function slug(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-function buildArenasFromPantaMarkets(markets: PantaLiveMarket[]) {
+function buildArenasFromPantaMarkets(markets: Array<{ ui: PantaMarket; endTime?: string | number }>) {
   // Preserve each market's endTime so the arena countdown reflects reality
   // (min endTime across the arena's markets = the next resolution boundary).
   const byCategory = new Map<string, Array<{ ui: PantaMarket; endTime?: string | number }>>();
-  for (const m of markets) {
-    const ui = pantaMarketToUi(m);
-    const key = slug(ui.category || "general");
+  for (const row of markets) {
+    const key = slug(row.ui.category || "general");
     if (!byCategory.has(key)) byCategory.set(key, []);
-    byCategory.get(key)!.push({ ui, endTime: m.endTime });
+    byCategory.get(key)!.push(row);
   }
   return Array.from(byCategory.entries()).map(([id, rows]) => {
     const meta = REALM_NAMES[id] ?? { name: rows[0].ui.category, tagline: `Live Panta markets in the ${rows[0].ui.category} category.` };
@@ -60,6 +59,24 @@ function buildArenasFromPantaMarkets(markets: PantaLiveMarket[]) {
   });
 }
 
+/** Snapshot prices are already normalized to integer cents; do not run them
+ * through toCents again (1¢ would otherwise be mistaken for a 100% fraction). */
+function snapshotToUi(m: Awaited<ReturnType<typeof listPantaCatalog>>[number]): PantaMarket {
+  return {
+    id: m.id,
+    question: m.question,
+    category: m.category,
+    yesPrice: m.displayYesCents,
+    change: 0,
+    volume: formatVolume(String(m.volumeUsdc)),
+    closes: m.endMs === null ? "—" : formatCloses(m.endMs),
+    phase: m.phase,
+    outcome: m.outcome,
+    resolvedAt: m.resolvedAt,
+    resolutionTime: m.resolutionMs === null ? null : new Date(m.resolutionMs).toISOString()
+  };
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const arenaId = url.searchParams.get("arena");
@@ -67,17 +84,14 @@ export async function GET(request: Request) {
 
   if (PANTA_LIVE) {
     try {
-      const qs = new URLSearchParams();
-      if (category) qs.set("category", category);
-      // Panta returns `{ items: [...] }` (paginated). Older docs referred
-      // to `{ markets: [...] }`. Handle both plus bare arrays for safety.
-      const data = await pantaFetch<{ items?: PantaLiveMarket[]; markets?: PantaLiveMarket[] } | PantaLiveMarket[]>(
-        `/markets/${qs.toString() ? `?${qs}` : ""}`
-      );
-      const list: PantaLiveMarket[] = Array.isArray(data)
-        ? data
-        : (data.items ?? data.markets ?? []);
-      const arenas = buildArenasFromPantaMarkets(list);
+      const snapshots = await listPantaCatalog();
+      if (pantaCatalogFetchFailed()) return NextResponse.json({ error: "Panta markets are temporarily unavailable." }, { status: 502 });
+      const filtered = category
+        ? snapshots.filter((market) => slug(market.category || "general") === slug(category))
+        : snapshots;
+      const arenas = buildArenasFromPantaMarkets(filtered.map((market) => ({
+        ui: snapshotToUi(market), endTime: market.endMs ?? undefined
+      })));
       if (arenaId) {
         const arena = arenas.find((a) => a.id === arenaId);
         if (!arena) return NextResponse.json({ source: "panta", error: "arena not found" }, { status: 404 });

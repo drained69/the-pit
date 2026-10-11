@@ -5,7 +5,8 @@ import { streakSpanSec } from "@/lib/streak";
 import { getDraft, getPantaMarket } from "@/lib/panta-market";
 import { PANTA_LIVE } from "@/lib/panta";
 import { PICKS_PRACTICE_ARENA, STREAK_PRACTICE_ARENA, chainVaultUsdc, cutLine, humanCount, isPantaPit, isPracticeArena, newArenaCode, normalizeArenaCode, redactOpeningCalls, seatCostUsdc, seatPlayer, standings, type Round, logEvent } from "@/lib/royale";
-import { escrowReady, initArenaOnChain, playerBalances } from "@/lib/escrow-server";
+import { configuredSolanaCluster, escrowReady, initArenaOnChain, playerBalances } from "@/lib/escrow-server";
+import { mainnetPaidReadinessError } from "@/lib/mainnet-readiness";
 import { sessionWallet } from "@/lib/session";
 import { NEEDS_X_MESSAGE, playerName } from "@/lib/identity";
 import { limitByIp, overLimit } from "@/lib/rate-limit";
@@ -185,12 +186,21 @@ export async function POST(request: Request) {
   const arena = wantArena && forceOk ? wantArena : newArenaCode();
 
   const onChain = escrowReady() && !isPracticeArena(arena);
-  if (process.env.NEXT_PUBLIC_SOLANA_CLUSTER === "mainnet-beta" && !isPracticeArena(arena)) {
-    const liveKey = /^pk_live_/.test(process.env.PANTA_API_KEY ?? "");
-    const mainnetMint = process.env.NEXT_PUBLIC_USDC_MINT === "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-    if (!onChain || !STORE_ENABLED || !liveKey || !mainnetMint || !process.env.SESSION_SECRET
-        || !process.env.NEXT_PUBLIC_PRIVY_APP_ID || !process.env.PRIVY_APP_SECRET) {
-      return NextResponse.json({ error: "Mainnet hosting is disabled until escrow, persistent storage, live Panta, USDC, and identity/session configuration are complete." }, { status: 503 });
+  const clusterLabel = process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet";
+  const needsChainCheck = !isPracticeArena(arena)
+    && (!!process.env.NEXT_PUBLIC_SOLANA_RPC || onChain || clusterLabel === "mainnet-beta");
+  if (needsChainCheck) {
+    let actualCluster: "mainnet-beta" | "devnet" | "unknown";
+    try { actualCluster = await configuredSolanaCluster(); }
+    catch { return NextResponse.json({ error: "The configured Solana RPC is unavailable; hosting is paused until chain identity can be verified." }, { status: 503 }); }
+    if (actualCluster === "unknown" || actualCluster !== clusterLabel) {
+      return NextResponse.json({ error: "The configured Solana RPC does not match the app's selected cluster; hosting is paused." }, { status: 503 });
+    }
+  }
+  if (clusterLabel === "mainnet-beta" && !isPracticeArena(arena)) {
+    const readinessError = await mainnetPaidReadinessError();
+    if (!onChain || readinessError) {
+      return NextResponse.json({ error: readinessError ?? "Mainnet escrow is not fully configured." }, { status: 503 });
     }
   }
   if (onChain && !STORE_ENABLED) {

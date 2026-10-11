@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { sessionWallet } from "@/lib/session";
 import { PublicKey } from "@solana/web3.js";
-import { buildDepositTx, buildWithdrawTx, escrowReady, playerBalances, readPlayerEntry, readVault, verifyPlayerDeposited } from "@/lib/escrow-server";
+import { buildDepositTx, buildWithdrawTx, configuredSolanaCluster, escrowPlayerReady, escrowReady, playerBalances, readPlayerEntry, readVault, verifyPlayerDeposited } from "@/lib/escrow-server";
 import { getActiveRound, getLatestRound, mutateActiveRound } from "@/lib/round-store";
 import { normalizeArenaCode, normalizeCallPct, seatCostUsdc, type Side } from "@/lib/royale";
 import { normalizeLocks, normalizePicks } from "@/lib/predictions";
 import { NEEDS_X_MESSAGE, playerName } from "@/lib/identity";
+import { mainnetPaidReadinessError } from "@/lib/mainnet-readiness";
 
 /** Cap on remembered pending seats per arena (anti-spam). */
 const MAX_PENDING_SEATS = 64;
@@ -27,7 +28,7 @@ export const dynamic = "force-dynamic";
  * (Host isn't here — InitRound is server-signed on POST /api/round.)
  */
 export async function POST(request: Request) {
-  const body = (await request.json()) as {
+  const body = (await request.json().catch(() => null)) as {
     action: "deposit" | "claim" | "recover";
     wallet: string;
     arena?: string;
@@ -38,11 +39,14 @@ export async function POST(request: Request) {
     openingCallPct?: number;
     picks?: Record<string, string>;
     locks?: string[];
-  };
-  if (!escrowReady()) {
+  } | null;
+  if (!body?.wallet) return NextResponse.json({ error: "wallet required" }, { status: 400 });
+  if (body.action !== "deposit" && body.action !== "claim" && body.action !== "recover") {
+    return NextResponse.json({ error: "unknown action" }, { status: 400 });
+  }
+  if (body.action === "deposit" ? !escrowReady() : !escrowPlayerReady()) {
     return NextResponse.json({ escrow: "inactive" });
   }
-  if (!body?.wallet) return NextResponse.json({ error: "wallet required" }, { status: 400 });
 
   let wallet: PublicKey;
   try { wallet = new PublicKey(body.wallet); }
@@ -80,7 +84,18 @@ export async function POST(request: Request) {
     // BUG F — pre-flight checks so the wallet is never asked to sign a tx
     // that will predictably fail on-chain.
     if (body.action === "deposit") {
-      const mainnet = process.env.NEXT_PUBLIC_SOLANA_CLUSTER === "mainnet-beta";
+      const clusterLabel = process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? "devnet";
+      let actualCluster: "mainnet-beta" | "devnet" | "unknown";
+      try { actualCluster = await configuredSolanaCluster(); }
+      catch { return NextResponse.json({ error: "The Solana RPC is unavailable; deposits are paused until the network can be verified." }, { status: 503 }); }
+      if (actualCluster === "unknown" || actualCluster !== clusterLabel) {
+        return NextResponse.json({ error: "The Solana RPC does not match the app's selected cluster; deposits are paused." }, { status: 503 });
+      }
+      if (actualCluster === "mainnet-beta") {
+        const readinessError = await mainnetPaidReadinessError();
+        if (readinessError) return NextResponse.json({ error: readinessError }, { status: 503 });
+      }
+      const mainnet = actualCluster === "mainnet-beta";
       // A paid seat needs a linked X account when usernames come from X.
       if ((await playerName(body.wallet, body.nickname, false)).needsX) {
         return NextResponse.json({ error: NEEDS_X_MESSAGE, needsX: true }, { status: 403 });
@@ -119,28 +134,30 @@ export async function POST(request: Request) {
       }
     }
     if (body.action === "claim") {
-      if (round.status !== "complete" && round.status !== "cancelled") {
-        return NextResponse.json({ error: `round is ${round.status} — nothing to claim yet` }, { status: 409 });
-      }
-      if (!escrow.settleSignatures || escrow.settleSignatures.length === 0) {
-        return NextResponse.json({ error: round.status === "cancelled" ? "refund is still being prepared — try again in a minute" : "pit not settled yet — settlement pending" }, { status: 409 });
-      }
-      // Claims go by the on-chain entry: it covers players, refunds of
-      // cancelled arenas, and deposits that never got a seat.
-      const pe = await readPlayerEntry(body.wallet, escrow.roundVault);
+      // On-chain state is authoritative. The server may have closed the vault
+      // and crashed before persisting its signatures to the ledger.
+      const [pe, vault] = await Promise.all([
+        readPlayerEntry(body.wallet, escrow.roundVault),
+        readVault(escrow.roundVault)
+      ]);
       if (!pe) return NextResponse.json({ error: "this wallet has no deposit in this pit" }, { status: 403 });
       if (pe.claimed) return NextResponse.json({ error: "already claimed" }, { status: 409 });
-      if (!pe.settled) return NextResponse.json({ error: "settlement for this wallet isn't recorded yet — try again in a minute" }, { status: 409 });
+      if (!vault?.settled || !pe.settled) return NextResponse.json({ error: "pit settlement is still pending — try again in a minute" }, { status: 409 });
       if (pe.entitlementUsdc <= 0) return NextResponse.json({ error: "nothing to claim — this vault finished at $0" }, { status: 409 });
     }
     if (body.action === "recover") {
-      if (round.status === "complete") {
-        return NextResponse.json({ error: "round completed — use Claim instead" }, { status: 409 });
+      // Recovery is an on-chain escape hatch, so a stale "complete" ledger
+      // status must not disable it while the vault itself remains open.
+      const [entry, vault] = await Promise.all([
+        readPlayerEntry(body.wallet, escrow.roundVault),
+        readVault(escrow.roundVault)
+      ]);
+      if (!entry || !vault) return NextResponse.json({ error: "this wallet did not deposit into this pit" }, { status: 403 });
+      if (entry.claimed) return NextResponse.json({ error: "already withdrawn" }, { status: 409 });
+      if (vault.settled) return NextResponse.json({ error: "this vault was settled — use Claim instead" }, { status: 409 });
+      if (Date.now() / 1000 < vault.settleDeadline) {
+        return NextResponse.json({ error: "recovery opens after the vault's deadline" }, { status: 409 });
       }
-      // Only depositors can recover; refuse observers early so they don't get
-      // a wallet prompt for a tx that would fail with AccountMismatch.
-      const dep = await verifyPlayerDeposited(body.wallet, escrow.roundVault);
-      if (!dep.ok) return NextResponse.json({ error: "this wallet did not deposit into this pit" }, { status: 403 });
     }
 
     if (body.action === "deposit" && sessionWallet(request) === body.wallet) {

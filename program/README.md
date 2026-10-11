@@ -47,7 +47,7 @@ Current devnet program id: `Ea9pUaAdVwuR71L5xv6SYdryLXeTuMRUtEkMChaBUyUx`
 
 ```bash
 # toolchain: solana-cli + cargo-build-sbf on PATH
-export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
 
 # 1. build
 cd program && cargo-build-sbf            # → target/deploy/oracle_rumble_escrow.so
@@ -66,24 +66,32 @@ bash scripts/deploy-escrow.sh
 ## Mainnet deployment
 
 The wallet in `PRIVATE_KEY` is configured locally as the escrow operator and
-mainnet deployment payer/upgrade authority. Its local keypair file is
-`.keys/mainnet-admin.json` (gitignored, mode 0600). The program ID still uses
-its own keypair at `.keys/escrow-program-keypair.json`; that file initializes
-the on-chain program address and does not pay deployment or runtime costs.
+mainnet deployment payer. Its local keypair file is `.keys/mainnet-admin.json`
+(gitignored, mode 0600). It must not retain upgrade authority because this key
+is loaded by the online web server. Set `MAINNET_UPGRADE_AUTHORITY_KEYPAIR` to
+a separate offline or multisig-controlled signer for deployment, and set
+`MAINNET_UPGRADE_AUTHORITY` to its public address in the release environment.
+The program ID still uses its own keypair at
+`.keys/escrow-program-keypair.json`; that file initializes the on-chain
+program address and does not pay deployment or runtime costs.
 
 Do not deploy until the escrow has completed an independent security review,
 the deployment wallet is funded, and a dedicated production RPC is available.
-Then set `SOLANA_MAINNET_RPC` to that RPC and `MAINNET_AUDIT_APPROVED=YES`, and
-run:
+Then set `SOLANA_MAINNET_RPC`, `MAINNET_UPGRADE_AUTHORITY_KEYPAIR`, and
+`MAINNET_AUDIT_APPROVED=YES`, and run:
 
 ```bash
 bash scripts/deploy-escrow-mainnet.sh
 ```
 
 This initial-deploy script refuses public Solana RPC endpoints, non-mainnet
-genesis hashes, missing audit approval, and program IDs that already exist on
-mainnet. After deployment, set `NEXT_PUBLIC_ESCROW_PROGRAM_ID` to the reported
-program ID and run the release preflight in the intended Railway environment.
+genesis hashes, a shared payer/upgrade key, missing audit approval, and
+program IDs that already exist on mainnet. It prints the SBF bytecode
+SHA-256 and byte length. After deployment, set `NEXT_PUBLIC_ESCROW_PROGRAM_ID`,
+`MAINNET_PROGRAM_SHA256`, `MAINNET_PROGRAM_BYTES`, and
+`MAINNET_UPGRADE_AUTHORITY`; then run the release preflight in the intended
+Railway environment. Preflight checks the on-chain ProgramData authority and
+bytecode against those frozen values.
 
 When both env vars are set, `lib/escrow.ts` reports `ESCROW_ACTIVE = true` and
 the app moves real USDC; otherwise it runs in ledger mode (server-side

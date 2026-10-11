@@ -42,11 +42,13 @@ export default function SiteHeader({
   extra?: ReactNode;
 }) {
   const { wallet, username, status, signIn, signOut } = useWalletIdentity();
-  const mode = escrow == null ? "…" : escrow.active ? "On-chain" : "Practice";
+  const mode = escrow == null ? "…" : escrow.active ? "On-chain" : escrow.withdrawalsAvailable ? "Withdrawals" : "Practice";
   const modeTitle = escrow == null
     ? "Checking escrow status"
     : escrow.active
       ? `Solana ${CLUSTER} · deposits and claims settle in a non-custodial escrow program`
+      : escrow.withdrawalsAvailable
+        ? `Solana ${CLUSTER} · new paid deposits are paused; existing claims and recoveries remain available`
       : `Solana ${CLUSTER} · practice mode (${escrow.reason ?? "escrow off"}) — no USDC moves`;
 
   return (

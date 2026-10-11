@@ -39,9 +39,15 @@ import {
 } from "@/lib/escrow";
 import { PLATFORM_CLAIM_FEE_BPS } from "@/lib/fees";
 
-const RPC = process.env.NEXT_PUBLIC_SOLANA_RPC ?? "https://api.devnet.solana.com";
+// Keep the production server RPC and its provider credential out of the
+// browser bundle. NEXT_PUBLIC_SOLANA_RPC is only a browser-safe fallback.
+const RPC = process.env.SOLANA_RPC_URL ?? process.env.NEXT_PUBLIC_SOLANA_RPC ?? "https://api.devnet.solana.com";
 
-const _g = globalThis as unknown as { __or_hostKey?: Keypair; __or_conn?: Connection };
+const _g = globalThis as unknown as {
+  __or_hostKey?: Keypair;
+  __or_conn?: Connection;
+  __or_rpcCluster?: { value: "mainnet-beta" | "devnet" | "unknown"; at: number };
+};
 
 /** Server-held host keypair. Same key used for every arena's InitRound. */
 export function hostKeypair(): Keypair | null {
@@ -68,6 +74,20 @@ export function connection(): Connection {
     _g.__or_conn = new Connection(RPC, { commitment: "confirmed" });
   }
   return _g.__or_conn;
+}
+
+/** Determine the chain from the RPC genesis hash, not the UI's cluster label. */
+export async function configuredSolanaCluster(): Promise<"mainnet-beta" | "devnet" | "unknown"> {
+  const hit = _g.__or_rpcCluster;
+  if (hit && Date.now() - hit.at < 30_000) return hit.value;
+  const genesis = await connection().getGenesisHash();
+  const value = genesis === "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+    ? "mainnet-beta"
+    : genesis === "GH7ome3EiwEr7tu9JuTh2dpYWBJK3z69Xm1ZE3MEE6JC"
+      ? "devnet"
+      : "unknown";
+  _g.__or_rpcCluster = { value, at: Date.now() };
+  return value;
 }
 
 const CONFIRM_TIMEOUT_MS = 60_000;
@@ -116,9 +136,14 @@ export function platformFeeWallet(): PublicKey | null {
   return hostKeypair()?.publicKey ?? null;
 }
 
-/** Fully-configured escrow: program id, USDC mint, and host key present. */
+/** Reading vaults and building player-signed withdrawals never need the host key. */
+export function escrowPlayerReady(): boolean {
+  return ESCROW_ACTIVE && !!ESCROW_PROGRAM_ID && !!USDC_MINT;
+}
+
+/** Fully-configured escrow for operator-signed hosting and deposits. */
 export function escrowReady(): boolean {
-  return ESCROW_ACTIVE && !!hostKeypair() && !!USDC_MINT;
+  return escrowPlayerReady() && !!hostKeypair();
 }
 
 /**
@@ -289,7 +314,7 @@ export async function buildDepositTx(player: PublicKey, roundVault: PublicKey, m
 }
 
 export async function buildWithdrawTx(player: PublicKey, roundVault: PublicKey, recover = false): Promise<{ base64: string } | { error: string }> {
-  if (!escrowReady() || !USDC_MINT) return { error: "escrow inactive" };
+  if (!escrowPlayerReady() || !USDC_MINT) return { error: "escrow inactive" };
   // Ditto: recover/claim may be the first time the wallet touches USDC.
   const createAta = ixCreateAtaIdempotent({ payer: player, owner: player, mint: USDC_MINT });
   // A claim on a v2 vault pays the platform fee to the recipient's account.
@@ -299,11 +324,13 @@ export async function buildWithdrawTx(player: PublicKey, roundVault: PublicKey, 
   return buildTx([createAta, withdraw], player);
 }
 
-// ── SETTLE: server signs + submits SettlePlayer + CloseSettlement ────────
+// ── SETTLE: server signs + submits normal settlement or atomic refund close ─
 export type SettleEntry = { wallet: string; entitlementUsdc: number };
 
 /**
- * SettlePlayer for every entry, then CloseSettlement. `expectDeposited` is
+ * SettlePlayer for every entry, then CloseSettlement. A cancellation instead
+ * uses CloseRefund, which assigns each full deposit in one on-chain tx.
+ * `expectDeposited` is
  * the vault's deposit count the entries were computed from: if a deposit
  * lands meanwhile, closing would lock that player's USDC for good (an
  * unsettled entry can't claim, a closed vault can't recover), so we stop
@@ -318,13 +345,15 @@ export async function settleArenaOnChain(roundVaultPk: string, players: SettleEn
     // Several SettlePlayer instructions per transaction (each is tiny), so a
     // full arena records in one or two confirmations instead of one per player.
     const PER_TX = 6;
-    for (let i = 0; i < players.length; i += PER_TX) {
-      const tx = new Transaction();
-      for (const p of players.slice(i, i + PER_TX)) {
-        const [playerEntry] = playerEntryPda(roundVault, new PublicKey(p.wallet));
-        tx.add(ixSettlePlayer({ host: host.publicKey, roundVault, playerEntry, entitlementUsdc: p.entitlementUsdc }));
+    if (!refund) {
+      for (let i = 0; i < players.length; i += PER_TX) {
+        const tx = new Transaction();
+        for (const p of players.slice(i, i + PER_TX)) {
+          const [playerEntry] = playerEntryPda(roundVault, new PublicKey(p.wallet));
+          tx.add(ixSettlePlayer({ host: host.publicKey, roundVault, playerEntry, entitlementUsdc: p.entitlementUsdc }));
+        }
+        sigs.push(await signSendConfirm(tx, [host]));
       }
-      sigs.push(await signSendConfirm(tx, [host]));
     }
     if (expectDeposited !== undefined) {
       const now = await readVault(roundVaultPk);
@@ -335,7 +364,7 @@ export async function settleArenaOnChain(roundVaultPk: string, players: SettleEn
     // The program checks this complete list against its deposit counter in
     // the close transaction. An in-flight deposit invalidates the close.
     const depositors = await listDepositors(roundVaultPk);
-    if (depositors.length !== expectDeposited || depositors.some((d) => !d.settled && !d.claimed)) {
+    if (depositors.length !== expectDeposited || (!refund && depositors.some((d) => !d.settled && !d.claimed))) {
       return { ok: false, retry: true, error: "deposit accounting changed during settlement" };
     }
     const playerEntries = depositors.map((d) => playerEntryPda(roundVault, new PublicKey(d.wallet))[0]);
@@ -376,7 +405,7 @@ export async function confirmSignature(signature: string, timeoutMs = 20_000): P
  * arena's roundVault.
  */
 export async function verifyPlayerDeposited(walletPk: string, roundVaultPk: string): Promise<{ ok: boolean; err?: string }> {
-  if (!escrowReady() || !ESCROW_PROGRAM_ID) return { ok: false, err: "escrow inactive" };
+  if (!escrowPlayerReady() || !ESCROW_PROGRAM_ID) return { ok: false, err: "escrow inactive" };
   try {
     const wallet = new PublicKey(walletPk);
     const roundVault = new PublicKey(roundVaultPk);
@@ -384,6 +413,9 @@ export async function verifyPlayerDeposited(walletPk: string, roundVaultPk: stri
     const info = await connection().getAccountInfo(playerEntry, "confirmed");
     if (!info) return { ok: false, err: "no PlayerEntry on-chain" };
     if (!info.owner.equals(ESCROW_PROGRAM_ID)) return { ok: false, err: "PlayerEntry not owned by escrow program" };
+    if (info.data.length < PLAYER_ENTRY_SIZE || info.data.readUInt8(82) === 1) {
+      return { ok: false, err: "PlayerEntry is invalid or was already withdrawn" };
+    }
     return { ok: true };
   } catch (err) {
     return { ok: false, err: err instanceof Error ? err.message : "verify failed" };

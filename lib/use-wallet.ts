@@ -14,7 +14,7 @@ import { currentSession, sessionFromX, signOut as endSession } from "@/lib/sessi
 import { getPrivyBridge, onPrivyChange, onXReturn, startXSignIn, waitForPrivy, X_ENABLED, X_NOT_SET_UP, X_UNAVAILABLE } from "@/lib/privy-client";
 import { describeWalletError } from "@/lib/wallet";
 
-export type EscrowStatus = { active: boolean; reason?: string | null };
+export type EscrowStatus = { active: boolean; withdrawalsAvailable?: boolean; reason?: string | null };
 
 /** "loading" until the session is known; "busy" while signing in or out. */
 export type IdentityStatus = "loading" | "out" | "busy" | "in";

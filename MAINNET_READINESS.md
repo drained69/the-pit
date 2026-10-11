@@ -1,14 +1,17 @@
-# The Pit mainnet release audit — 10 October 2026
+# The Pit mainnet release review — 11 October 2026
 
 ## Current decision: NO GO
 
-Railway was last verified on devnet. The Panta API key is live, but the Solana
-side is not ready for real funds. A previous read-only check found no deployed
-mainnet escrow program and 0 mainnet SOL in the operator wallet. The current
-local `.env.local` stages mainnet and canonical Circle USDC, but has no
-production RPC, database, Privy credentials, or mainnet program ID. The local
-preflight currently fails those checks; RPC and Railway requests also fail
-from this environment because DNS/network access is unavailable.
+Railway production was verified on devnet on 11 October. Its Panta API key is
+live and its database and Privy variables are set, but it has no server-side
+production Solana RPC and still has the devnet cluster and a non-mainnet USDC
+mint. The operator `C4kBbe3c6hMMkr7TSyjK7hKBiL9cd7myErJAmqYwKHc5` has
+0 SOL on mainnet, and the intended escrow program
+`Ea9pUaAdVwuR71L5xv6SYdryLXeTuMRUtEkMChaBUyUx` is absent there. No
+mainnet deployment transaction was submitted. Mainnet rent for 134,333 bytes
+of ProgramData is 0.68306188 SOL; deployment also needs a temporary buffer,
+the Program account, transaction fees, and headroom. These were read from
+mainnet RPC, not estimated from devnet.
 
 An internal review found that settlement could still be closed after the
 recovery deadline, defeating a player's recovery right, and the proposed
@@ -18,7 +21,11 @@ devnet deposit → trade → settle → claim/recover test or an external audit.
 Do not route real USDC through this build yet.
 
 This is a code review and local test pass, not an independent smart contract
-audit or a guarantee that all vulnerabilities have been found.
+audit or a guarantee that all vulnerabilities have been found. The operator
+also chooses each player's settlement entitlement; the program conserves
+escrowed funds but does not verify off-chain rankings. A compromised operator
+could award the pool unfairly to an account it controls. This trust assumption
+must be explicit before real-money use.
 
 ## Changes made in this pass
 
@@ -89,6 +96,11 @@ audit or a guarantee that all vulnerabilities have been found.
 - `cargo test --locked --offline` — passed, four escrow helper regression tests.
 - `cargo-build-sbf` — passed with the local Solana v1.54 toolchain; the `.so`
   was generated at `program/target/deploy/oracle_rumble_escrow.so`.
+- The 11 October rebuild reproduced SHA-256
+  `51f0c776b5861008fc3c8f89503b2568a339c35ed3949035e4b59114d1acfa96`
+  (134,288 bytes). The CLI's default rustup invocation failed on this machine;
+  the bundled platform toolchain built successfully, and the deployment script
+  now retries with it.
 - `npm run preflight:mainnet` — failed as expected because independent audit
   approval, production RPCs, persistent database, Privy credentials, separate
   upgrade authority, frozen bytecode identity, and mainnet program ID are not

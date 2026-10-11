@@ -63,7 +63,19 @@ if solana program show --url "$RPC" "$PROGRAM_ID" >/dev/null 2>&1; then
 fi
 
 echo "Building escrow program from the current source..."
-(cd program && cargo-build-sbf)
+if ! (cd program && cargo-build-sbf); then
+  # Some Solana CLI installations bundle Cargo but do not register the bundled
+  # toolchain with rustup. Build with that exact platform toolchain instead.
+  SBF_VERSION="$(cargo-build-sbf --version | awk '/^platform-tools / {print $2}')"
+  SBF_TOOLS="$HOME/.cache/solana/$SBF_VERSION/platform-tools/rust/bin"
+  if [[ -z "$SBF_VERSION" || ! -x "$SBF_TOOLS/cargo" || ! -x "$SBF_TOOLS/rustc" ]]; then
+    echo "SBF build failed and the bundled platform toolchain is unavailable." >&2
+    exit 1
+  fi
+  echo "Retrying SBF build with bundled platform tools $SBF_VERSION..."
+  (cd program && CARGO="$SBF_TOOLS/cargo" RUSTC="$SBF_TOOLS/rustc" \
+    cargo-build-sbf --no-rustup-override --offline)
+fi
 
 ACTUAL_HASH="$(shasum -a 256 "$SO" | awk '{print $1}')"
 ACTUAL_BYTES="$(wc -c < "$SO" | tr -d ' ')"

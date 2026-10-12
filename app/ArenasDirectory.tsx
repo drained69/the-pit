@@ -727,6 +727,15 @@ function HostPanel({
           : "Write your own question — tonight's game, a stream bet, anything with a clear yes or no. It's listed on Panta and your pit runs on it."}
       </p>
 
+      {src !== "crypto" && (
+        <p className="mkt-mainnet-note" role="note">
+          <span className="mmn-tag">Devnet preview</span>
+          {src === "create"
+            ? "Creating a new Panta market is fully functional on mainnet. On devnet it runs on Panta's test connection, so creation is limited."
+            : "Hosting a pit and trading the room work here on devnet with test USDC. Real-money Panta markets and on-chain payouts are fully functional on mainnet."}
+        </p>
+      )}
+
       {src === "panta" && (
         <div className="mkt-pick" role="listbox" aria-label="Panta markets">
           {market.catalog.loaded && market.catalog.items.length > 0 && (

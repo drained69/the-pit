@@ -626,7 +626,7 @@ function PlayPanel({
               <button key={a.arenaCode} className="gm-mini-arena" onClick={() => onJoin(a.inviteSlug)}>
                 <span className={`rank-badge ${t.toLowerCase()}`} aria-label={`Tier ${t}`}>{t}</span>
                 <span className="mid">
-                  <span className="q">{isPicksFormat(a.format) ? a.marketQuestion : `${a.asset} · ${a.marketQuestion}`}</span>
+                  <span className="q">{isPicksFormat(a.format) ? a.marketQuestion : `${a.marketSource === "panta" ? "Panta" : a.asset} · ${a.marketQuestion}`}</span>
                   <span className="meta">{a.humans}/{a.capacity} players · {STATUS_LABEL[a.status]}{d ? ` · ${fmtClock(tl)}` : ""}</span>
                 </span>
                 <span className="prize">{usd.format(a.prizePoolUsdc)}</span>
@@ -714,7 +714,7 @@ function HostPanel({
 
       <FieldRow label="Market">
         <div className="gm-seg" role="radiogroup" aria-label="Market source">
-          <button role="radio" aria-checked={src === "crypto"} className={`opt ${src === "crypto" ? "on" : ""}`} onClick={() => market.setSource("crypto")}>Crypto</button>
+          <button role="radio" aria-checked={src === "crypto"} className={`opt ${src === "crypto" ? "on" : ""}`} onClick={() => market.setSource("crypto")}>Primary</button>
           <button role="radio" aria-checked={src === "panta"} className={`opt ${src === "panta" ? "on" : ""}`} onClick={() => market.setSource("panta")}>Panta market</button>
           <button role="radio" aria-checked={src === "create"} className={`opt ${src === "create" ? "on" : ""}`} onClick={() => market.setSource("create")}>New market</button>
         </div>

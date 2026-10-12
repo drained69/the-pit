@@ -472,11 +472,11 @@ function PantaOrb({ round, yes, line, live }: { round: Round; yes: number; line:
     <div
       className={`mr-orb ${shownYes >= 50 ? "up" : "down"} ${live ? "live" : ""}`}
       role="img"
-      aria-label={`${round.config.asset} market. Room odds YES ${shownYes} cents${ref !== null ? `, Panta ${ref} cents` : ""}.`}
+      aria-label={`Panta market. Room odds YES ${shownYes} cents${ref !== null ? `, Panta ${ref} cents` : ""}.`}
     >
       <div className="mr-orb-ring" aria-hidden="true" />
       <div className="mr-orb-core">
-        <span className="mr-orb-q">{round.config.asset} · {settled ? (book!.settledBy === "outcome" ? "resolved" : "settled") : round.status === "enrolling" ? "opening line" : "room odds"}</span>
+        <span className="mr-orb-q">PANTA · {settled ? (book!.settledBy === "outcome" ? "resolved" : "settled") : round.status === "enrolling" ? "opening line" : "room odds"}</span>
         <span className="mr-orb-price">{shownYes}<em>¢</em></span>
         {settled ? (
           <span className="mr-orb-move">{book!.settledBy === "outcome" ? `Panta ruled ${shownYes >= 50 ? "YES" : "NO"}` : "closing-period average"}</span>

@@ -518,7 +518,7 @@ export default function ArenaView({ arenaCode }: { arenaCode: string }) {
               </div>
             ) : null}
             <div className="rb-cell grow">
-              <span className="rb-k">{entryOnly ? "Game" : `Market · ${round.config.asset}`}</span>
+              <span className="rb-k">{entryOnly ? "Game" : `Market · ${pantaPit ? "Panta" : round.config.asset}`}</span>
               <span className="rb-v market">
                 {picksMode ? `Five picks on BTC, ETH and SOL · ${Math.round(round.config.liveSec / 60)} min`
                   : streakMode ? `Streak · ${leg && round.status !== "enrolling" ? `leg ${leg.n} of up to ${round.streak!.maxLegs}` : `up to ${MAX_LEGS} legs`} · ${Math.round(round.config.liveSec / 60)}-min legs`

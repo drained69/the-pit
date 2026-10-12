@@ -83,7 +83,7 @@ export async function configuredSolanaCluster(): Promise<"mainnet-beta" | "devne
   const genesis = await connection().getGenesisHash();
   const value = genesis === "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
     ? "mainnet-beta"
-    : genesis === "GH7ome3EiwEr7tu9JuTh2dpYWBJK3z69Xm1ZE3MEE6JC"
+    : genesis === "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
       ? "devnet"
       : "unknown";
   _g.__or_rpcCluster = { value, at: Date.now() };
